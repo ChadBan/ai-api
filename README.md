@@ -1,13 +1,13 @@
-# AI Model Scheduler
+# ai-api is a Model Scheduler
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](https://go.dev/)
 [![Vue Version](https://img.shields.io/badge/Vue-3.4+-4FC08D?logo=vue.js)](https://vuejs.org/)
 [![Status](https://img.shields.io/badge/status-beta-yellow)]()
 
 > **注意**: 本项目正在积极开发中（Beta 阶段）。基础架构和 UI 已完成，更多功能正在陆续实现。
 
-**AI Model Scheduler** 是一个面向开发者和中小企业的开源 AI 模型调度系统。它提供统一的 API 接口，支持 OpenAI、Claude、Gemini 等主流 AI 模型的智能路由、计费管理和限流控制。**现在包含完整的 Web 管理界面！**
+**ai-api** 是一个面向开发者和中小企业的开源 AI 模型调度系统。它提供统一的 API 接口，支持 OpenAI、Claude、Gemini 等主流 AI 模型的智能路由、计费管理和限流控制。**现在包含完整的 Web 管理界面！**
 
 ## ✨ 特性
 
@@ -37,8 +37,8 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/ai-model-scheduler/ai-model-scheduler.git
-cd ai-model-scheduler/deploy/docker
+git clone git@github.com:ChadBan/ai-api.git
+cd ai-api/deploy/docker
 
 # 启动所有服务
 docker-compose up -d
@@ -232,7 +232,7 @@ golangci-lint run
 
 ## 📄 许可证
 
-本项目采用 Apache 2.0 许可证 - 详见 [LICENSE](LICENSE) 文件
+本项目采用 GNU Affero General Public License v3.0 许可证 - 详见 [LICENSE](LICENSE) 文件
 
 ## 📞 联系方式
 

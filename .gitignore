@@ -89,4 +89,5 @@ debug/
 .lingma/
 .qoder/
 web/node_modules/
+web/.vite/
 pkg/
