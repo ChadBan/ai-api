@@ -87,7 +87,10 @@
             :key="index"
             :class="['message', message.role]"
           >
-            <div class="message-content">{{ message.content }}</div>
+            <div class="message-content" v-if="message.role === 'user'">
+              {{ message.content }}
+            </div>
+            <div class="message-content" v-else v-html="renderMarkdown(message.content)"></div>
           </div>
           <div v-if="isStreaming" class="message assistant">
             <div class="message-content">{{ streamingContent }}</div>
@@ -121,6 +124,21 @@
 
 <script>
 import api from '@/api';
+import hljs from 'highlight.js';
+import 'highlight.js/styles/github.css';
+import MarkdownIt from 'markdown-it';
+
+// 初始化MarkdownIt实例
+const md = new MarkdownIt({
+  highlight: function (str, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(str, { language: lang }).value;
+      } catch (__) {}
+    }
+    return '';
+  }
+});
 
 export default {
   name: 'EnhancedPlayground',
@@ -392,6 +410,10 @@ export default {
         role: 'assistant', 
         content: '你好！我是您的 AI 助手，有什么可以帮助您的吗？' 
       })
+    },
+    // 渲染Markdown内容
+    renderMarkdown(content) {
+      return md.render(content)
     }
   }
 }
@@ -492,6 +514,93 @@ export default {
   background-color: #f5f7fa;
   color: #303133;
   border-top-left-radius: 2px;
+}
+
+/* Markdown样式 */
+.message-content h1, .message-content h2, .message-content h3, .message-content h4, .message-content h5, .message-content h6 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.message-content h1 {
+  font-size: 1.5rem;
+}
+
+.message-content h2 {
+  font-size: 1.25rem;
+}
+
+.message-content h3 {
+  font-size: 1.125rem;
+}
+
+.message-content p {
+  margin-bottom: 0.75rem;
+}
+
+.message-content ul, .message-content ol {
+  margin-bottom: 0.75rem;
+  padding-left: 1.5rem;
+}
+
+.message-content li {
+  margin-bottom: 0.25rem;
+}
+
+.message-content code {
+  background-color: #f1f1f1;
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9em;
+}
+
+.message-content pre {
+  background-color: #f1f1f1;
+  padding: 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}
+
+.message-content pre code {
+  background-color: transparent;
+  padding: 0;
+}
+
+.message-content blockquote {
+  border-left: 4px solid #409eff;
+  padding-left: 1rem;
+  margin: 0.75rem 0;
+  color: #666;
+  font-style: italic;
+}
+
+.message-content a {
+  color: #409eff;
+  text-decoration: none;
+}
+
+.message-content a:hover {
+  text-decoration: underline;
+}
+
+.message-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 0.75rem;
+}
+
+.message-content th, .message-content td {
+  border: 1px solid #ddd;
+  padding: 0.5rem;
+  text-align: left;
+}
+
+.message-content th {
+  background-color: #f5f7fa;
+  font-weight: 600;
 }
 
 .chat-input {
