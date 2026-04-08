@@ -24,7 +24,18 @@
       <el-table :data="channels" v-loading="loading" border style="width: 100%">
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="name" label="名称" />
-        <el-table-column prop="display_name" label="显示名称" />
+        <el-table-column prop="api_key" label="API Key" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.api_key ? '******' + row.api_key.slice(-4) : '' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="group" label="分组" width="120">
+          <template #default="{ row }">
+            <el-tag size="small">
+              {{ row.group || 'default' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="type" label="类型" width="120">
           <template #default="{ row }">
             <el-tag :type="getChannelTypeTag(row.type)">
@@ -137,45 +148,38 @@
             <el-option label="维护中" :value="2" />
           </el-select>
         </el-form-item>
-        <el-form-item label="支持模型" required>
+        <el-form-item label="模型" required>
           <div class="model-management">
-            <!-- 模型搜索框 -->
-            <div class="model-search">
-              <el-input 
-                v-model="modelSearchQuery" 
-                placeholder="搜索模型..." 
-                @input="handleModelSearch"
-              >
-                <template #prefix>
-                  <el-icon><Search /></el-icon>
-                </template>
-                <template #suffix>
-                  <el-button 
-                    v-if="modelSearchQuery" 
-                    type="text" 
-                    @click="clearModelSearch"
-                  >
-                    <el-icon><Close /></el-icon>
-                  </el-button>
-                </template>
-              </el-input>
-            </div>
+            <!-- 模型选择器 -->
+            <el-select
+              v-model="selectedModels"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              placeholder="请选择该渠道所支持的模型"
+              style="width: 100%"
+              @change="updateFilteredModels"
+            >
+              <el-option
+                v-for="model in filteredModels"
+                :key="model"
+                :label="model"
+                :value="model"
+              />
+            </el-select>
             
-            <!-- 模型标签显示 -->
-            <div class="model-tags">
-              <el-tag 
-                v-for="model in filteredModels" 
-                :key="model" 
-                :effect="selectedModels.includes(model) ? 'dark' : 'plain'"
-                :class="{'selected-tag': selectedModels.includes(model)}"
-                @click="toggleModelSelection(model)"
+            <!-- 已选择模型标签显示 -->
+            <div class="selected-model-tags" v-if="selectedModels.length > 0">
+              <el-tag
+                v-for="model in selectedModels"
+                :key="model"
+                closable
+                @close="removeModel(model)"
+                class="selected-tag"
               >
                 {{ model }}
-                <el-icon v-if="selectedModels.includes(model)">
-                  <Check />
-                </el-icon>
               </el-tag>
-              <el-empty v-if="filteredModels.length === 0" description="未找到匹配的模型" />
             </div>
             
             <div class="model-actions">
@@ -192,28 +196,18 @@
                 <el-icon><Refresh /></el-icon>
                 同步最新模型
               </el-button>
-              <el-button type="text" size="small" @click="showManualModelInput = !showManualModelInput">
-                更多
-              </el-button>
-            </div>
-            
-            <div v-if="showManualModelInput" class="manual-model-input">
-              <el-input v-model="manualModel" placeholder="输入自定义模型名称" @keyup.enter="addManualModel" />
-              <el-button type="primary" size="small" @click="addManualModel">
-                填入
-              </el-button>
             </div>
           </div>
         </el-form-item>
         
         <el-form-item label="分组">
           <el-select v-model="createForm.group" placeholder="选择分组">
-            <el-option label="default" :value="'default'" />
-            <el-option label="openai" :value="'openai'" />
-            <el-option label="anthropic" :value="'anthropic'" />
-            <el-option label="google" :value="'google'" />
-            <el-option label="azure" :value="'azure'" />
-            <el-option label="domestic" :value="'domestic'" />
+            <el-option 
+              v-for="group in groups" 
+              :key="group.name" 
+              :label="group.display_name || group.name" 
+              :value="group.name" 
+            />
           </el-select>
         </el-form-item>
       </el-form>
@@ -274,45 +268,38 @@
             <el-option label="维护中" :value="2" />
           </el-select>
         </el-form-item>
-        <el-form-item label="支持模型" required>
+        <el-form-item label="模型" required>
           <div class="model-management">
-            <!-- 模型搜索框 -->
-            <div class="model-search">
-              <el-input 
-                v-model="editModelSearchQuery" 
-                placeholder="搜索模型..." 
-                @input="handleEditModelSearch"
-              >
-                <template #prefix>
-                  <el-icon><Search /></el-icon>
-                </template>
-                <template #suffix>
-                  <el-button 
-                    v-if="editModelSearchQuery" 
-                    type="text" 
-                    @click="clearEditModelSearch"
-                  >
-                    <el-icon><Close /></el-icon>
-                  </el-button>
-                </template>
-              </el-input>
-            </div>
+            <!-- 模型选择器 -->
+            <el-select
+              v-model="selectedEditModels"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              placeholder="请选择该渠道所支持的模型"
+              style="width: 100%"
+              @change="updateFilteredEditModels"
+            >
+              <el-option
+                v-for="model in filteredEditModels"
+                :key="model"
+                :label="model"
+                :value="model"
+              />
+            </el-select>
             
-            <!-- 模型标签显示 -->
-            <div class="model-tags">
-              <el-tag 
-                v-for="model in filteredEditModels" 
-                :key="model" 
-                :effect="selectedEditModels.includes(model) ? 'dark' : 'plain'"
-                :class="{'selected-tag': selectedEditModels.includes(model)}"
-                @click="toggleEditModelSelection(model)"
+            <!-- 已选择模型标签显示 -->
+            <div class="selected-model-tags" v-if="selectedEditModels.length > 0">
+              <el-tag
+                v-for="model in selectedEditModels"
+                :key="model"
+                closable
+                @close="removeEditModel(model)"
+                class="selected-tag"
               >
                 {{ model }}
-                <el-icon v-if="selectedEditModels.includes(model)">
-                  <Check />
-                </el-icon>
               </el-tag>
-              <el-empty v-if="filteredEditModels.length === 0" description="未找到匹配的模型" />
             </div>
             
             <div class="model-actions">
@@ -329,28 +316,18 @@
                 <el-icon><Refresh /></el-icon>
                 同步最新模型
               </el-button>
-              <el-button type="text" size="small" @click="showEditManualModelInput = !showEditManualModelInput">
-                更多
-              </el-button>
-            </div>
-            
-            <div v-if="showEditManualModelInput" class="manual-model-input">
-              <el-input v-model="editManualModel" placeholder="输入自定义模型名称" @keyup.enter="addEditManualModel" />
-              <el-button type="primary" size="small" @click="addEditManualModel">
-                填入
-              </el-button>
             </div>
           </div>
         </el-form-item>
         
         <el-form-item label="分组">
           <el-select v-model="editForm.group" placeholder="选择分组">
-            <el-option label="default" :value="'default'" />
-            <el-option label="openai" :value="'openai'" />
-            <el-option label="anthropic" :value="'anthropic'" />
-            <el-option label="google" :value="'google'" />
-            <el-option label="azure" :value="'azure'" />
-            <el-option label="domestic" :value="'domestic'" />
+            <el-option 
+              v-for="group in groups" 
+              :key="group.name" 
+              :label="group.display_name || group.name" 
+              :value="group.name" 
+            />
           </el-select>
         </el-form-item>
       </el-form>
@@ -382,13 +359,11 @@ const syncingModels = ref(false)
 const showManualModelInput = ref(false)
 const manualModel = ref('')
 const syncingEditModels = ref(false)
-const showEditManualModelInput = ref(false)
-const editManualModel = ref('')
 const customModels = ref({}) // 存储手动添加的模型
-const modelSearchQuery = ref('')
-const editModelSearchQuery = ref('')
 const filteredModels = ref([])
 const filteredEditModels = ref([])
+const groups = ref([]) // 存储分组列表
+const hasSyncedModels = ref({}) // 记录是否已经同步过模型
 
 const createForm = reactive({
   type: 1,
@@ -419,60 +394,72 @@ const editForm = reactive({
   group: 'default'
 })
 
+// 模型名称映射
+const modelNameMap = {
+  // 豆包模型映射
+  'Doubao-pro-128k': 'doubao-pro-128k',
+  'Doubao-pro-32k': 'doubao-pro-32k',
+  'Doubao-pro-4k': 'doubao-pro-4k',
+  'Doubao-lite-128k': 'doubao-lite-128k',
+  'Doubao-lite-32k': 'doubao-lite-32k',
+  'Doubao-lite-4k': 'doubao-lite-4k',
+  'Doubao-embedding': 'doubao-embedding-1.0'
+}
+
 // 渠道类型配置
 const channelConfigs = {
   1: { // OpenAI
     baseUrl: 'https://api.openai.com/v1',
     testModel: 'gpt-3.5-turbo',
-    models: ['gpt-3.5-turbo', 'gpt-4', 'gpt-4o', 'gpt-4-turbo'],
+    models: [], // 从API获取
     apiKeyTip: 'OpenAI API Key 格式为 sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   },
   2: { // Anthropic
     baseUrl: 'https://api.anthropic.com/v1',
     testModel: 'claude-3-sonnet-20240229',
-    models: ['claude-3-sonnet-20240229', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'],
+    models: [], // 从API获取
     apiKeyTip: 'Anthropic API Key 格式为 sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   },
   3: { // Azure
     baseUrl: 'https://your-resource.openai.azure.com/openai/deployments/{deployment-name}',
     testModel: 'gpt-35-turbo',
-    models: ['gpt-35-turbo', 'gpt-4', 'gpt-4-turbo'],
+    models: [], // 从API获取
     apiKeyTip: 'Azure API Key 格式为 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   },
   4: { // Google Gemini
     baseUrl: 'https://generativeai.googleapis.com/v1',
     testModel: 'gemini-pro',
-    models: ['gemini-pro', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+    models: [], // 从API获取
     apiKeyTip: 'Google API Key 格式为 AIzaSyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   },
   14: { // 豆包
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-    testModel: 'ep-20240604172028-4q775',
-    models: ['ep-20240604172028-4q775', 'ep-20240610144610-g97pz'],
+    testModel: 'Doubao-pro-128k',
+    models: [], // 从API获取
     apiKeyTip: '豆包 API Key 格式为 ak-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   },
   15: { // 阿里通义
     baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
     testModel: 'qwen-turbo',
-    models: ['qwen-turbo', 'qwen-plus', 'qwen-max'],
+    models: [], // 从API获取
     apiKeyTip: '阿里通义 API Key 格式为 sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   },
   16: { // DeepSeek
     baseUrl: 'https://api.deepseek.com/v1',
     testModel: 'deepseek-chat',
-    models: ['deepseek-chat', 'deepseek-llm'],
+    models: [], // 从API获取
     apiKeyTip: 'DeepSeek API Key 格式为 sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   },
   17: { // MiniMax
     baseUrl: 'https://api.minimax.chat/v1',
     testModel: 'abab5.5-chat',
-    models: ['abab5.5-chat', 'abab6-chat'],
+    models: [], // 从API获取
     apiKeyTip: 'MiniMax API Key 格式为 sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   },
   18: { // 智谱 AI
     baseUrl: 'https://open.bigmodel.cn/api/mcp',
     testModel: 'chatglm3-6b',
-    models: ['chatglm3-6b', 'chatglm3-6b-32k', 'glm-4'],
+    models: [], // 从API获取
     apiKeyTip: '智谱 AI API Key 格式为 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   }
 }
@@ -529,43 +516,27 @@ const getAvailableModels = (type) => {
 
 // 计算过滤后的模型列表
 const updateFilteredModels = () => {
-  if (!modelSearchQuery.value) {
-    filteredModels.value = getAvailableModels(createForm.type)
-  } else {
-    filteredModels.value = getAvailableModels(createForm.type).filter(model => 
-      model.toLowerCase().includes(modelSearchQuery.value.toLowerCase())
-    )
-  }
+  filteredModels.value = getAvailableModels(createForm.type)
 }
 
 const updateFilteredEditModels = () => {
-  if (!editModelSearchQuery.value) {
-    filteredEditModels.value = getAvailableModels(editForm.type)
-  } else {
-    filteredEditModels.value = getAvailableModels(editForm.type).filter(model => 
-      model.toLowerCase().includes(editModelSearchQuery.value.toLowerCase())
-    )
+  filteredEditModels.value = getAvailableModels(editForm.type)
+}
+
+// 移除模型
+const removeModel = (model) => {
+  const index = selectedModels.value.indexOf(model)
+  if (index > -1) {
+    selectedModels.value.splice(index, 1)
   }
 }
 
-// 处理模型搜索
-const handleModelSearch = () => {
-  updateFilteredModels()
-}
-
-const handleEditModelSearch = () => {
-  updateFilteredEditModels()
-}
-
-// 清空搜索
-const clearModelSearch = () => {
-  modelSearchQuery.value = ''
-  updateFilteredModels()
-}
-
-const clearEditModelSearch = () => {
-  editModelSearchQuery.value = ''
-  updateFilteredEditModels()
+// 移除编辑模型
+const removeEditModel = (model) => {
+  const index = selectedEditModels.value.indexOf(model)
+  if (index > -1) {
+    selectedEditModels.value.splice(index, 1)
+  }
 }
 
 const getApiKeyTip = (type) => {
@@ -616,7 +587,11 @@ const syncModels = async (type) => {
     // 从后端API获取最新模型列表
     ElMessage.info('正在同步最新模型...')
     
-    const response = await api.admin.getLatestModels({ type })
+    const response = await api.admin.getLatestModels({
+      type,
+      api_key: createForm.api_key,
+      base_url: createForm.base_url
+    })
     const latestModels = response.data.data || []
     
     // 更新渠道配置中的模型列表
@@ -642,7 +617,11 @@ const syncEditModels = async (type) => {
     // 从后端API获取最新模型列表
     ElMessage.info('正在同步最新模型...')
     
-    const response = await api.admin.getLatestModels({ type })
+    const response = await api.admin.getLatestModels({
+      type,
+      api_key: editForm.api_key,
+      base_url: editForm.base_url
+    })
     const latestModels = response.data.data || []
     
     // 更新渠道配置中的模型列表
@@ -659,6 +638,25 @@ const syncEditModels = async (type) => {
     ElMessage.error('模型同步失败')
   } finally {
     syncingEditModels.value = false
+  }
+}
+
+// 初始化模型列表
+const initModels = async () => {
+  try {
+    // 为所有渠道类型同步模型列表
+    for (const type in channelConfigs) {
+      const response = await api.admin.getLatestModels({ type })
+      const latestModels = response.data.data || []
+      if (channelConfigs[type]) {
+        channelConfigs[type].models = latestModels
+      }
+    }
+    // 更新过滤后的模型列表
+    updateFilteredModels()
+    updateFilteredEditModels()
+  } catch (error) {
+    console.error('Failed to initialize models:', error)
   }
 }
 
@@ -722,7 +720,18 @@ const getLatestModelsByType = (type) => {
     case 4: // Google Gemini
       return ['gemini-pro', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-pro']
     case 14: // 豆包
-      return ['ep-20240604172028-4q775', 'ep-20240610144610-g97pz', 'doubao-1.5-pro-20240528']
+      return [
+        'doubao-1.5-pro-20240528',
+        'doubao-1.5-flash-20240528',
+        'doubao-1.0-pro-20240528',
+        'doubao-1.0-flash-20240528',
+        'ep-20240604172028-4q775',
+        'ep-20240610144610-g97pz',
+        'ep-20240701171326-7q7d2',
+        'ep-20240715143158-4v8z9',
+        'ep-20240801150102-5g6h7',
+        'doubao-embedding-1.0'
+      ]
     case 15: // 阿里通义
       return ['qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-2.5-turbo', 'qwen-2.5-plus']
     case 16: // DeepSeek
@@ -766,6 +775,13 @@ const fillEditRelatedModels = (type) => {
   ElMessage.success('已填入相关模型')
 }
 
+// 转换模型名称为API使用的名称
+const convertModelNames = (models) => {
+  return models.map(model => {
+    return modelNameMap[model] || model
+  })
+}
+
 const resetCreateForm = () => {
   createForm.type = 1
   createForm.name = ''
@@ -782,14 +798,18 @@ const resetCreateForm = () => {
   showCreateDialog.value = false
   showManualModelInput.value = false
   manualModel.value = ''
+  // 清除同步标记
+  hasSyncedModels.value = {}
+  // 更新过滤后的模型列表
+  updateFilteredModels()
 }
 
 const loadChannels = async () => {
   loading.value = true
   try {
     const res = await api.admin.getChannels({ page: 1, page_size: 100 })
-    // 新响应格式: { code, message, data: { items: [...], total: N } }
-    channels.value = res.data.data?.items || []
+    // 新响应格式: { code, message, data: { data: [...], total: N } }
+    channels.value = res.data.data?.data || []
   } catch (error) {
     console.error('Failed to load channels:', error)
     ElMessage.error('加载渠道失败')
@@ -804,8 +824,9 @@ const refreshChannels = () => {
 
 const handleCreate = async () => {
   try {
-    // 将选中的模型转换为JSON字符串
-    createForm.models = JSON.stringify(selectedModels.value)
+    // 转换模型名称并转换为JSON字符串
+    const convertedModels = convertModelNames(selectedModels.value)
+    createForm.models = JSON.stringify(convertedModels)
     
     const data = {
       ...createForm
@@ -826,7 +847,7 @@ const editChannel = (channel) => {
   editForm.name = channel.name
   editForm.display_name = channel.display_name
   editForm.base_url = channel.base_url
-  editForm.api_key = channel.api_key
+  editForm.api_key = channel.api_key || ''
   editForm.test_model = channel.test_model
   editForm.priority = channel.priority
   editForm.weight = channel.weight
@@ -841,15 +862,20 @@ const editChannel = (channel) => {
     selectedEditModels.value = []
   }
   
+  // 清除同步标记
+  hasSyncedModels.value = {}
+  
+  // 更新过滤后的模型列表
+  updateFilteredEditModels()
+  
   showEditDialog.value = true
-  showEditManualModelInput.value = false
-  editManualModel.value = ''
 }
 
 const handleEdit = async () => {
   try {
-    // 将选中的模型转换为JSON字符串
-    editForm.models = JSON.stringify(selectedEditModels.value)
+    // 转换模型名称并转换为JSON字符串
+    const convertedModels = convertModelNames(selectedEditModels.value)
+    editForm.models = JSON.stringify(convertedModels)
     
     const data = {
       ...editForm
@@ -901,8 +927,67 @@ const deleteChannel = async (id) => {
   }
 }
 
+const loadGroups = async () => {
+  try {
+    const res = await api.admin.getGroups({ page: 1, page_size: 100 })
+    groups.value = res.data.data?.data || []
+  } catch (error) {
+    console.error('Failed to load groups:', error)
+  }
+}
+
+const handleModelFocus = async (form, mode) => {
+  const key = `${mode}-${form.type}`
+  
+  // 如果已经同步过，就不再同步
+  if (hasSyncedModels.value[key]) {
+    return
+  }
+  
+  if (!form.api_key) {
+    ElMessage.warning('请先填写 API Key')
+    return
+  }
+  if (!form.base_url) {
+    ElMessage.warning('请先填写 Base URL')
+    return
+  }
+  if (!form.type) {
+    ElMessage.warning('请先选择渠道类型')
+    return
+  }
+  
+  try {
+    const response = await api.admin.getLatestModels({
+      type: form.type,
+      api_key: form.api_key,
+      base_url: form.base_url
+    })
+    const latestModels = response.data.data || []
+    
+    if (channelConfigs[form.type]) {
+      channelConfigs[form.type].models = latestModels
+    }
+    
+    if (mode === 'create') {
+      updateFilteredModels()
+    } else {
+      updateFilteredEditModels()
+    }
+    
+    // 标记为已同步
+    hasSyncedModels.value[key] = true
+    
+    ElMessage.success('模型列表获取成功')
+  } catch (error) {
+    console.error('Failed to get models:', error)
+    // 不显示错误消息，避免影响用户体验
+  }
+}
+
 onMounted(() => {
   loadChannels()
+  loadGroups()
   // 初始化过滤后的模型列表
   updateFilteredModels()
   updateFilteredEditModels()
@@ -940,34 +1025,23 @@ onMounted(() => {
     flex-direction: column;
     gap: 10px;
     
-    .model-search {
-      margin-bottom: 5px;
-      
-      .el-input {
-        width: 100%;
-      }
-    }
-    
-    .model-tags {
+    .selected-model-tags {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
       padding: 10px;
       background-color: #f5f7fa;
       border-radius: 4px;
-      min-height: 80px;
+      min-height: 40px;
       
-      .el-tag {
+      .selected-tag {
+        font-weight: bold;
         cursor: pointer;
         transition: all 0.3s ease;
         
         &:hover {
           transform: translateY(-2px);
         }
-      }
-      
-      .selected-tag {
-        font-weight: bold;
       }
     }
     
@@ -976,19 +1050,6 @@ onMounted(() => {
       gap: 8px;
       flex-wrap: wrap;
       padding: 5px 0;
-    }
-    
-    .manual-model-input {
-      display: flex;
-      gap: 10px;
-      margin-top: 5px;
-      padding: 10px;
-      background-color: #f0f2f5;
-      border-radius: 4px;
-      
-      .el-input {
-        flex: 1;
-      }
     }
   }
 }

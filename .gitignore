@@ -4,7 +4,8 @@
 *.dll
 *.so
 *.dylib
-bin/
+app/bin/
+app/docs/
 
 # Test binary, built with `go test -c`
 *.test
@@ -90,4 +91,3 @@ debug/
 .qoder/
 web/node_modules/
 web/.vite/
-pkg/

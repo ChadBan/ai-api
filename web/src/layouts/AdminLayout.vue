@@ -48,6 +48,11 @@
               <el-icon><Setting /></el-icon>
               <span>系统配置</span>
             </el-menu-item>
+            
+            <el-menu-item index="/admin/groups">
+              <el-icon><Collection /></el-icon>
+              <span>分组管理</span>
+            </el-menu-item>
         </el-menu>
       </el-aside>
       
@@ -101,7 +106,7 @@
 
 <script setup>
 import { useUserStore } from '@/store/user'
-import { ArrowDown, Connection, DataAnalysis, House, Key, Setting, SwitchButton, Ticket, User, UserFilled } from '@element-plus/icons-vue'
+import { ArrowDown, Collection, Connection, DataAnalysis, House, Key, Setting, SwitchButton, Ticket, User, UserFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -120,7 +125,8 @@ const currentRouteName = computed(() => {
     '/admin/tokens': 'Token 管理',
     '/admin/redemptions': '兑换码管理',
     '/admin/logs': '日志管理',
-    '/admin/config': '系统配置'
+    '/admin/config': '系统配置',
+    '/admin/groups': '分组管理'
   }
   return nameMap[route.path] || '未知'
 })

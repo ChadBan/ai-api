@@ -8,6 +8,8 @@
 > **注意**: 本项目正在积极开发中（Beta 阶段）。基础架构和 UI 已完成，更多功能正在陆续实现。
 
 **ai-api** 是一个面向开发者和中小企业的开源 AI 模型调度系统。它提供统一的 API 接口，支持 OpenAI、Claude、Gemini 等主流 AI 模型的智能路由、计费管理和限流控制。**现在包含完整的 Web 管理界面！**
+![alt text](image-1.png)
+![alt text](image.png)
 
 ## ✨ 特性
 
@@ -236,8 +238,8 @@ golangci-lint run
 
 ## 📞 联系方式
 
-- GitHub Issues: [提交问题](https://github.com/ai-model-scheduler/ai-model-scheduler/issues)
-- 技术讨论：[GitHub Discussions](https://github.com/ai-model-scheduler/ai-model-scheduler/discussions)
+- GitHub Issues: [提交问题](https://github.com/ChadBan/ai-api/issues)
+- 技术讨论：[GitHub Discussions](https://github.com/ChadBan/ai-api/discussions)
 
 ## 🙏 致谢
 

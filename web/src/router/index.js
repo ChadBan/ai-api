@@ -80,6 +80,11 @@ const routes = [
         path: 'config',
         name: 'AdminConfig',
         component: () => import('@/views/admin/Config.vue')
+      },
+      {
+        path: 'groups',
+        name: 'AdminGroups',
+        component: () => import('@/views/admin/Groups.vue')
       }
     ]
   }
