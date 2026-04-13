@@ -201,6 +201,21 @@ export default {
     return api.get('/v1/statistics/dashboard')
   },
 
+  // 用户仪表板数据
+  getUserDashboard() {
+    return api.get('/v1/dashboard')
+  },
+
+  // 图表数据
+  getChartData(timeRange) {
+    return api.get('/v1/dashboard/chart', { params: { time_range: timeRange } })
+  },
+
+  // 最近请求
+  getRecentRequests() {
+    return api.get('/v1/dashboard/requests')
+  },
+
   getUserStats(params) {
     return api.get('/v1/statistics/user', { params })
   },

@@ -462,6 +462,15 @@ func (s *ChannelService) RefreshChannels() error {
 	return s.loadChannels()
 }
 
+// GetChannelByID 根据渠道 ID 获取渠道
+func (s *ChannelService) GetChannelByID(channelID int64) (*model.Channel, error) {
+	var channel model.Channel
+	if err := s.db.First(&channel, channelID).Error; err != nil {
+		return nil, err
+	}
+	return &channel, nil
+}
+
 // ChannelHealthStatus 渠道健康状态
 type ChannelHealthStatus struct {
 	ChannelID    int64   `json:"channel_id"`

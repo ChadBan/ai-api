@@ -120,6 +120,16 @@ func (r *APIRouter) registerUserRoutes(v1 *gin.RouterGroup) {
 	{
 		billings.GET("", userHandler.GetBillings)
 	}
+
+	// 仪表板相关路由
+	statisticsHandler := handler.NewStatisticsHandler(r.db)
+	dashboard := v1.Group("/dashboard")
+	dashboard.Use(middleware.AuthMiddleware())
+	{
+		dashboard.GET("", statisticsHandler.GetUserDashboard)
+		dashboard.GET("/chart", statisticsHandler.GetUserChartData)
+		dashboard.GET("/requests", statisticsHandler.GetUserRecentRequests)
+	}
 }
 
 // registerModelRoutes 注册模型路由
@@ -147,6 +157,7 @@ func (r *APIRouter) registerRelayRoutes(v1 *gin.RouterGroup) {
 	{
 		relay.POST("/chat/completions", relayHandler.TokenAuthMiddleware(), relayHandler.ChatCompletions)
 		relay.POST("/completions", relayHandler.TokenAuthMiddleware(), relayHandler.ChatCompletions)
+		relay.POST("/chat/completions/stream", relayHandler.TokenAuthMiddleware(), relayHandler.ChatCompletionsStream)
 		relay.POST("/embeddings", relayHandler.TokenAuthMiddleware(), relayHandler.Embeddings)
 		relay.POST("/images/generations", relayHandler.TokenAuthMiddleware(), relayHandler.ImagesGenerations)
 	}

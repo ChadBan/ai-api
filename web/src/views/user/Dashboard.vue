@@ -277,65 +277,27 @@ const modelChartOption = computed(() => {
 
 const loadChartData = async () => {
   try {
-    // 模拟数据，实际应从API获取
-    if (timeRange.value === 'today') {
-      chartData.value = [
-        { time: '00:00', value: 120 },
-        { time: '04:00', value: 80 },
-        { time: '08:00', value: 200 },
-        { time: '12:00', value: 350 },
-        { time: '16:00', value: 420 },
-        { time: '20:00', value: 280 }
-      ]
-    } else if (timeRange.value === '7days') {
-      chartData.value = [
-        { time: 'Day 1', value: 1200 },
-        { time: 'Day 2', value: 1350 },
-        { time: 'Day 3', value: 1420 },
-        { time: 'Day 4', value: 1500 },
-        { time: 'Day 5', value: 1650 },
-        { time: 'Day 6', value: 1480 },
-        { time: 'Day 7', value: 1720 }
-      ]
-    } else {
-      chartData.value = [
-        { time: 'Week 1', value: 8000 },
-        { time: 'Week 2', value: 8500 },
-        { time: 'Week 3', value: 9200 },
-        { time: 'Week 4', value: 10000 }
-      ]
-    }
+    // 从API获取真实数据
+    const res = await api.getChartData(timeRange.value)
+    const data = res.data?.data || res.data || {}
+    chartData.value = data.request_trend || []
+    modelData.value = data.model_usage || []
   } catch (error) {
     console.error('加载图表数据失败:', error)
-  }
-}
-
-const loadModelData = async () => {
-  try {
-    // 模拟数据，实际应从API获取
-    modelData.value = [
-      { model: 'gpt-3.5-turbo', count: 1200 },
-      { model: 'gpt-4', count: 800 },
-      { model: 'claude-3-sonnet', count: 600 },
-      { model: 'gemini-pro', count: 400 }
-    ]
-  } catch (error) {
-    console.error('加载模型数据失败:', error)
+    chartData.value = []
+    modelData.value = []
   }
 }
 
 const loadRecentRequests = async () => {
   try {
-    // 模拟数据，实际应从API获取
-    recentRequests.value = [
-      { id: 1, model_name: 'gpt-3.5-turbo', path: '/chat/completions', status_code: 200, duration: 120, created_at: new Date().toISOString() },
-      { id: 2, model_name: 'gpt-4', path: '/chat/completions', status_code: 200, duration: 250, created_at: new Date().toISOString() },
-      { id: 3, model_name: 'claude-3-sonnet', path: '/chat/completions', status_code: 200, duration: 180, created_at: new Date().toISOString() },
-      { id: 4, model_name: 'gemini-pro', path: '/chat/completions', status_code: 200, duration: 150, created_at: new Date().toISOString() },
-      { id: 5, model_name: 'gpt-3.5-turbo', path: '/chat/completions', status_code: 401, duration: 50, created_at: new Date().toISOString() }
-    ]
+    // 从API获取真实数据
+    const res = await api.getRecentRequests()
+    const data = res.data?.data || res.data || {}
+    recentRequests.value = data.requests || []
   } catch (error) {
     console.error('加载最近请求失败:', error)
+    recentRequests.value = []
   }
 }
 
@@ -345,21 +307,25 @@ const refreshRequests = async () => {
 
 onMounted(async () => {
   try {
-    const [balanceRes, statsRes] = await Promise.all([
+    const [balanceRes, statsRes, chartRes, requestsRes] = await Promise.all([
       api.getBalance(),
-      api.getDashboard()
+      api.getUserDashboard(),
+      api.getChartData(timeRange.value),
+      api.getRecentRequests()
     ])
     
     // 新响应格式: { code, message, data: {...} }
     balance.value = balanceRes.data?.data || balanceRes.data
     stats.value = statsRes.data?.data || statsRes.data || {}
     
-    // 加载图表数据
-    await Promise.all([
-      loadChartData(),
-      loadModelData(),
-      loadRecentRequests()
-    ])
+    // 处理图表数据
+    const chartDataRes = chartRes.data?.data || chartRes.data || {}
+    chartData.value = chartDataRes.request_trend || []
+    modelData.value = chartDataRes.model_usage || []
+    
+    // 处理最近请求
+    const requestsData = requestsRes.data?.data || requestsRes.data || {}
+    recentRequests.value = requestsData.requests || []
   } catch (error) {
     console.error('Failed to load dashboard data:', error)
   }

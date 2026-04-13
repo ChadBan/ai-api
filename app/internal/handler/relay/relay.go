@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"ai-api/app/internal/common"
+	"ai-api/app/internal/handler/relay/adapter"
 	"ai-api/app/internal/logger"
 	"ai-api/app/internal/util"
 
@@ -29,6 +29,7 @@ type RelayHandler struct {
 	billingService *service.BillingService
 	tokenService   *service.TokenService
 	logger         *logger.Logger
+	adapterFactory *adapter.AdapterFactory
 }
 
 // NewRelayHandler 创建 RelayHandler
@@ -39,6 +40,7 @@ func NewRelayHandler(db *gorm.DB, channelService *service.ChannelService, billin
 		billingService: billingService,
 		tokenService:   tokenService,
 		logger:         logger,
+		adapterFactory: adapter.NewAdapterFactory(),
 	}
 }
 
@@ -134,29 +136,91 @@ func (h *RelayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// 转发请求到渠道
-	response, _, err := h.forwardToChannelWithBody(c, channel, &req)
+	// 创建适配器
+	adap := h.adapterFactory.CreateAdapter(channel)
+
+	// 构建请求
+	httpReq, err := adap.BuildRequest(c, channel, &req)
+	if err != nil {
+		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, fmt.Sprintf("failed to build request: %v", err))
+		return
+	}
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, fmt.Sprintf("channel error: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
 	durationMs := formatDuration(startTime)
 
 	var inputTokens, outputTokens int
 	success := true
 	errorMsg := ""
 
-	if err != nil {
-		success = false
-		errorMsg = err.Error()
-		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, fmt.Sprintf("channel error: %v", err))
+	if req.Stream {
+		// 处理流式响应
+		if err := adap.HandleStreamResponse(resp, c); err != nil {
+			h.logger.Error("Handle stream response failed", logger.Err(err))
+			success = false
+			errorMsg = err.Error()
+		}
 	} else {
-		// 计算 token 使用量
-		inputTokens = estimatePromptTokens(req.Messages)
-		outputTokens = estimateCompletionTokens(response.Choices)
+		// 处理非流式响应
+		response, err := adap.HandleResponse(resp)
+		if err != nil {
+			success = false
+			errorMsg = err.Error()
+			common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, fmt.Sprintf("channel error: %v", err))
+		} else {
+			// 计算 token 使用量
+			inputTokens = estimatePromptTokens(req.Messages)
+			// 尝试从响应中提取 outputTokens
+			if respMap, ok := response.(map[string]interface{}); ok {
+				if usage, ok := respMap["usage"].(map[string]interface{}); ok {
+					if completionTokens, ok := usage["completion_tokens"].(float64); ok {
+						outputTokens = int(completionTokens)
+					}
+				}
 
-		// 更新渠道统计
-		responseTime := int64(durationMs)
-		h.channelService.UpdateChannelUsedTokens(channel.ID, int64(inputTokens+outputTokens), responseTime)
+				// 只返回 message.content
+				if choices, ok := respMap["choices"].([]interface{}); ok && len(choices) > 0 {
+					if choice, ok := choices[0].(map[string]interface{}); ok {
+						if message, ok := choice["message"].(map[string]interface{}); ok {
+							if content, ok := message["content"].(string); ok {
+								// 更新渠道统计
+								responseTime := int64(durationMs)
+								h.channelService.UpdateChannelUsedTokens(channel.ID, int64(inputTokens+outputTokens), responseTime)
 
-		// 返回响应
-		common.SuccessResponse(c, util.Success, response)
+								// 返回响应
+								common.SuccessResponse(c, util.Success, content)
+							}
+						}
+					}
+				} else {
+					// 如果无法提取 content，则返回完整响应
+					// 更新渠道统计
+					responseTime := int64(durationMs)
+					h.channelService.UpdateChannelUsedTokens(channel.ID, int64(inputTokens+outputTokens), responseTime)
+
+					// 返回响应
+					common.SuccessResponse(c, util.Success, response)
+				}
+			} else {
+				// 如果响应不是 map，则返回完整响应
+				// 更新渠道统计
+				responseTime := int64(durationMs)
+				h.channelService.UpdateChannelUsedTokens(channel.ID, int64(inputTokens+outputTokens), responseTime)
+
+				// 返回响应
+				common.SuccessResponse(c, util.Success, response)
+			}
+		}
 	}
 
 	// 扣减配额并记录使用（异步）
@@ -202,35 +266,14 @@ func (h *RelayHandler) PlaygroundChatCompletions(c *gin.Context) {
 	}
 	h.logger.Info("PlaygroundChatCompletions: channel selected", logger.Int64("channel_id", channel.ID), logger.String("channel_name", channel.Name))
 
-	// 设置 SSE 头（流式响应）
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
+	// 创建适配器
+	adap := h.adapterFactory.CreateAdapter(channel)
 
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, "streaming unsupported")
-		return
-	}
-
-	// 构建请求体
-	reqBody, err := json.Marshal(req)
+	// 构建请求
+	httpReq, err := adap.BuildRequest(c, channel, &req)
 	if err != nil {
-		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, err.Error())
+		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, fmt.Sprintf("failed to build request: %v", err))
 		return
-	}
-
-	// 根据渠道类型构建请求
-	httpReq, headers := h.buildHTTPRequest(c, channel, reqBody, req.Model)
-	if httpReq == nil {
-		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, "failed to build request")
-		return
-	}
-
-	// 设置请求头
-	for key, value := range headers {
-		httpReq.Header.Set(key, value)
 	}
 
 	// 发送请求
@@ -247,201 +290,21 @@ func (h *RelayHandler) PlaygroundChatCompletions(c *gin.Context) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-
-		println(11111)
 		common.ErrorResponse(c, resp.StatusCode, util.InternalServerError, string(body))
 		return
 	}
 
-	// 流式转发
-	buf := make([]byte, 1024)
-	totalTokens := 0
-
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
-			// 写入响应
-			if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
-				h.logger.Error("write to client failed", logger.Err(writeErr))
-				break
-			}
-			flusher.Flush()
-
-			// 简单估算 token 数量（用于计费）
-			totalTokens += n / 4 // 粗略估算：4 字节 ≈ 1 token
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			h.logger.Error("read from channel failed", logger.Err(err))
-			break
-		}
+	// 处理流式响应
+	if err := adap.HandleStreamResponse(resp, c); err != nil {
+		h.logger.Error("Handle stream response failed", logger.Err(err))
 	}
 
-	// 记录使用统计（简化版）
+	// 记录使用统计
 	h.logger.Info("Playground chat completed",
 		logger.Int64("userid", realUserID),
 		logger.String("model", req.Model),
-		logger.Int("estimated_tokens", totalTokens),
 		logger.Int64("channel_id", channel.ID),
 	)
-}
-
-func (h *RelayHandler) buildHTTPRequest(c *gin.Context, channel *model.Channel, reqBody []byte, modelName string) (*http.Request, map[string]string) {
-	var httpReq *http.Request
-	var headers map[string]string
-	var err error
-
-	switch channel.Type {
-	case 1: // OpenAI
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	case 2: // Anthropic Claude
-		// 解析原始请求体以获取完整参数
-		var originalReq ChatCompletionsRequest
-		if err := json.Unmarshal(reqBody, &originalReq); err == nil {
-			hanthropicReq := map[string]interface{}{
-				"model":             modelName,
-				"messages":          originalReq.Messages,
-				"temperature":       originalReq.Temperature,
-				"max_tokens":        originalReq.MaxTokens,
-				"top_p":             originalReq.TopP,
-				"frequency_penalty": originalReq.FrequencyPenalty,
-				"presence_penalty":  originalReq.PresencePenalty,
-			}
-			if len(originalReq.Stop) > 0 {
-				hanthropicReq["stop_sequences"] = originalReq.Stop
-			}
-			reqBody, _ = json.Marshal(hanthropicReq)
-		}
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v1/messages",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":      "application/json",
-			"x-api-key":         channel.APIKey,
-			"anthropic-version": "2023-06-01",
-		}
-	case 3: // Azure OpenAI
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type": "application/json",
-			"api-key":      channel.APIKey,
-		}
-	case 4: // Google Gemini
-		// 解析原始请求体以获取完整参数
-		var originalReq ChatCompletionsRequest
-		if err := json.Unmarshal(reqBody, &originalReq); err == nil {
-			geminiReq := map[string]interface{}{
-				"model":             modelName,
-				"messages":          originalReq.Messages,
-				"temperature":       originalReq.Temperature,
-				"max_output_tokens": originalReq.MaxTokens,
-				"top_p":             originalReq.TopP,
-			}
-			reqBody, _ = json.Marshal(geminiReq)
-		}
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v1/models/"+modelName+":generateContent",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	// 国内大模型
-	case 14: // 豆包
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/api/v3/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	case 15: // 阿里通义
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/compatible-mode/v1/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	case 16: // DeepSeek
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	case 17: // MiniMax
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v1/text/chatcompletion_v2",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	case 18: // 智谱 AI
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v4/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	default: // 默认 OpenAI 格式
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	}
-
-	if err != nil {
-		return nil, nil
-	}
-	return httpReq, headers
 }
 
 // ChatCompletionsStream 处理流式聊天补全请求
@@ -479,60 +342,37 @@ func (h *RelayHandler) ChatCompletionsStream(c *gin.Context) {
 		return
 	}
 
-	// 设置 SSE 头
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
+	// 创建适配器
+	adap := h.adapterFactory.CreateAdapter(channel)
 
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, "streaming unsupported")
+	// 构建请求
+	httpReq, err := adap.BuildRequest(c, channel, &req)
+	if err != nil {
+		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, fmt.Sprintf("failed to build request: %v", err))
 		return
 	}
 
-	// 转发流式请求到渠道
-	resp, err := h.forwardStreamToChannel(c, channel, &req)
+	// 发送请求
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		common.ErrorResponse(c, http.StatusInternalServerError, util.InternalServerError, fmt.Sprintf("channel error: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
-	// 读取并转发流式响应
-	reader := bufio.NewReader(resp.Body)
-	totalCompletionTokens := 0
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		common.ErrorResponse(c, resp.StatusCode, util.InternalServerError, string(body))
+		return
+	}
 
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return
-		}
-
-		lineStr := string(line)
-
-		// 跳过空行和注释
-		if len(lineStr) < 6 || lineStr[:6] != "data: " {
-			continue
-		}
-
-		// 解析数据
-		data := lineStr[6:]
-		if data == "[DONE]\n" {
-			c.Writer.WriteString(lineStr)
-			flusher.Flush()
-			break
-		}
-
-		// 转发给客户端
-		c.Writer.WriteString(lineStr)
-		flusher.Flush()
-
-		// 估算 completion tokens
-		totalCompletionTokens += estimateCompletionTokensFromStream(data)
+	// 处理流式响应
+	if err := adap.HandleStreamResponse(resp, c); err != nil {
+		h.logger.Error("Handle stream response failed", logger.Err(err))
 	}
 
 	// 异步扣费
@@ -544,354 +384,11 @@ func (h *RelayHandler) ChatCompletionsStream(c *gin.Context) {
 			0,
 			req.Model,
 			promptTokens,
-			totalCompletionTokens,
+			0, // 流式响应中难以准确计算 token 数
 			channel.ID,
 			channel.Name,
 		)
 	}()
-}
-
-// forwardToChannel 转发请求到渠道
-func (h *RelayHandler) forwardToChannel(c *gin.Context, channel *model.Channel, req *ChatCompletionsRequest) (*ChatCompletionsResponse, error) {
-	// 根据渠道类型构建请求
-	reqBody, err := json.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
-
-	var httpReq *http.Request
-	var headers map[string]string
-
-	switch channel.Type {
-	case 1: // OpenAI
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	case 2: // Anthropic Claude
-		// 转换为 Anthropic 格式
-		hanthropicReq := map[string]interface{}{
-			"model":             req.Model,
-			"messages":          req.Messages,
-			"temperature":       req.Temperature,
-			"max_tokens":        req.MaxTokens,
-			"top_p":             req.TopP,
-			"frequency_penalty": req.FrequencyPenalty,
-			"presence_penalty":  req.PresencePenalty,
-		}
-		if len(req.Stop) > 0 {
-			hanthropicReq["stop_sequences"] = req.Stop
-		}
-		reqBody, _ = json.Marshal(hanthropicReq)
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v1/messages",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":      "application/json",
-			"x-api-key":         channel.APIKey,
-			"anthropic-version": "2023-06-01",
-		}
-	case 3: // Azure OpenAI
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type": "application/json",
-			"api-key":      channel.APIKey,
-		}
-	case 4: // Google Gemini
-		// 转换为 Gemini 格式
-		geminiReq := map[string]interface{}{
-			"model":             req.Model,
-			"messages":          req.Messages,
-			"temperature":       req.Temperature,
-			"max_output_tokens": req.MaxTokens,
-			"top_p":             req.TopP,
-		}
-		reqBody, _ = json.Marshal(geminiReq)
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v1/models/"+req.Model+":generateContent",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-
-	// 国内大模型（兼容 OpenAI 格式）
-	case 14: // 豆包 (ByteDance)
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/api/v3/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-
-	case 15: // 阿里通义
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/compatible-mode/v1/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-
-	case 16: // DeepSeek
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-
-	case 17: // MiniMax
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v1/text/chatcompletion_v2",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-
-	case 18: // 智谱 AI
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v4/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-
-	default: // 默认为 OpenAI 格式
-		httpReq, err = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-		}
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	// 设置请求头
-	for key, value := range headers {
-		httpReq.Header.Set(key, value)
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	// 处理不同渠道的响应格式
-	if channel.Type == 4 { // Google Gemini
-		var geminiResp struct {
-			Candidates []struct {
-				Content struct {
-					Parts []struct {
-						Text string `json:"text"`
-					} `json:"parts"`
-				} `json:"content"`
-			} `json:"candidates"`
-			Usage struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			} `json:"usageMetadata"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-			return nil, err
-		}
-
-		// 转换为 OpenAI 格式
-		response := &ChatCompletionsResponse{
-			ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-			Object:  "chat.completion",
-			Created: time.Now().Unix(),
-			Model:   req.Model,
-			Choices: []Choice{},
-			Usage: Usage{
-				PromptTokens:     geminiResp.Usage.PromptTokens,
-				CompletionTokens: geminiResp.Usage.CompletionTokens,
-				TotalTokens:      geminiResp.Usage.PromptTokens + geminiResp.Usage.CompletionTokens,
-			},
-		}
-
-		if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
-			content := ""
-			for _, part := range geminiResp.Candidates[0].Content.Parts {
-				content += part.Text
-			}
-			response.Choices = append(response.Choices, Choice{
-				Index: 0,
-				Message: Message{
-					Role:    "assistant",
-					Content: content,
-				},
-				FinishReason: "stop",
-			})
-		}
-
-		return response, nil
-	} else {
-		var response ChatCompletionsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-			return nil, err
-		}
-
-		// 转换 Anthropic 响应格式
-		if channel.Type == 2 {
-			// 这里可以添加响应格式转换逻辑
-		}
-
-		return &response, nil
-	}
-}
-
-// forwardStreamToChannel 转发流式请求到渠道
-func (h *RelayHandler) forwardStreamToChannel(c *gin.Context, channel *model.Channel, req *ChatCompletionsRequest) (*http.Response, error) {
-	req.Stream = true
-	var reqBody []byte
-	var httpReq *http.Request
-	var headers map[string]string
-
-	switch channel.Type {
-	case 1: // OpenAI
-		reqBody, _ = json.Marshal(req)
-		httpReq, _ = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-			"Accept":        "text/event-stream",
-		}
-	case 2: // Anthropic Claude
-		// 转换为 Anthropic 格式
-		hanthropicReq := map[string]interface{}{
-			"model":             req.Model,
-			"messages":          req.Messages,
-			"temperature":       req.Temperature,
-			"max_tokens":        req.MaxTokens,
-			"stream":            true,
-			"top_p":             req.TopP,
-			"frequency_penalty": req.FrequencyPenalty,
-			"presence_penalty":  req.PresencePenalty,
-		}
-		if len(req.Stop) > 0 {
-			hanthropicReq["stop_sequences"] = req.Stop
-		}
-		reqBody, _ = json.Marshal(hanthropicReq)
-		httpReq, _ = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v1/messages",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":      "application/json",
-			"x-api-key":         channel.APIKey,
-			"anthropic-version": "2023-06-01",
-			"Accept":            "text/event-stream",
-		}
-	case 3: // Azure OpenAI
-		reqBody, _ = json.Marshal(req)
-		httpReq, _ = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type": "application/json",
-			"api-key":      channel.APIKey,
-			"Accept":       "text/event-stream",
-		}
-	case 4: // Google Gemini
-		// 转换为 Gemini 格式
-		geminiReq := map[string]interface{}{
-			"model":             req.Model,
-			"messages":          req.Messages,
-			"temperature":       req.Temperature,
-			"max_output_tokens": req.MaxTokens,
-			"stream":            true,
-			"top_p":             req.TopP,
-		}
-		reqBody, _ = json.Marshal(geminiReq)
-		httpReq, _ = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/v1/models/"+req.Model+":generateContent",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-			"Accept":        "text/event-stream",
-		}
-	default: // 默认为 OpenAI 格式
-		reqBody, _ = json.Marshal(req)
-		httpReq, _ = http.NewRequestWithContext(
-			c.Request.Context(),
-			"POST",
-			channel.BaseURL+"/chat/completions",
-			bytes.NewReader(reqBody),
-		)
-		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + channel.APIKey,
-			"Accept":        "text/event-stream",
-		}
-	}
-
-	// 设置请求头
-	for key, value := range headers {
-		httpReq.Header.Set(key, value)
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	return client.Do(httpReq)
 }
 
 // estimatePromptTokens 估算 prompt tokens（简单估算）
@@ -1277,6 +774,37 @@ func (h *RelayHandler) DeductQuotaAndRecord(c *gin.Context, token *model.Token, 
 
 	if err := h.tokenService.RecordTokenUsage(ctx, usageLog); err != nil {
 		h.logger.Error("failed to record token usage", logger.Err(err))
+	}
+
+	// 记录 UsageRecord
+	statusCode := 200
+	if !success {
+		statusCode = 500
+	}
+
+	channel, err := h.channelService.GetChannelByID(channelID)
+	if err != nil {
+		h.logger.Error("failed to get channel", logger.Err(err))
+		return
+	}
+
+	usageRecord := &model.UsageRecord{
+		UserID:       token.UserID,
+		APIKeyID:     token.ID,
+		ModelName:    modelName,
+		ProviderName: channel.Name,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		TotalTokens:  inputTokens + outputTokens,
+		RequestType:  "chat_completions",
+		StatusCode:   statusCode,
+		ErrorMessage: errorMsg,
+		Duration:     int64(durationMs),
+		CreatedAt:    time.Now(),
+	}
+
+	if err := h.db.Create(usageRecord).Error; err != nil {
+		h.logger.Error("failed to create usage record", logger.Err(err))
 	}
 }
 
